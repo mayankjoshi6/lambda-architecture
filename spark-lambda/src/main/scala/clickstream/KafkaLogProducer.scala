@@ -3,7 +3,7 @@ package clickstream
 import java.util.{Properties, Random}
 
 import config.Settings
-import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
+import org.apache.kafka.clients.producer.{Callback, KafkaProducer, ProducerRecord, RecordMetadata}
 
 import scala.util.Properties
 
@@ -25,9 +25,20 @@ object KafkaLogProducer extends App{
   props.put("bootstrap.servers","localhost:9092")
   props.put("key.serializer","org.apache.kafka.common.serialization.StringSerializer")
   props.put("value.serializer","org.apache.kafka.common.serialization.StringSerializer")
+  props.put("acks","all")
+
 
   val kafkaProducer = new KafkaProducer[Nothing,String](props)
+  private val callback = new Callback {
+    override def onCompletion(metadata: RecordMetadata, exception: Exception): Unit = {
+      if (exception !=null) {
+        exception.printStackTrace()
+      } else {
 
+        println("published: " + metadata.toString)
+      }
+      }
+  }
   for ( fileCount <- 1 to numOfFiles) {
     val incrementTimeEvery = rnd.nextInt(wlc.records - 1) + 1
 
@@ -55,8 +66,8 @@ object KafkaLogProducer extends App{
 
       val line = s"$adjustedTimestamp\t$referrer\t$action\t$prevPage\t$visitor\t$page\t$product\n"
       val producerRecord = new ProducerRecord[Nothing,String](weblogTopic,line)
-      kafkaProducer.send(producerRecord)
-
+      kafkaProducer.send(producerRecord,callback)
+      println(s"Sent message: $line")
       println(s"Incrementing every $incrementTimeEvery")
       if (iteration % incrementTimeEvery == 0) {
         println(s"Sent $iteration messages!")

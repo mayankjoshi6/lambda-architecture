@@ -2,7 +2,12 @@ package streaming
 
 import config.Settings
 import domain.{Activity, ActivityByProduct}
-import org.apache.spark.streaming.kafka.KafkaUtils
+import functions._
+import org.apache.spark.sql.{SaveMode, functions}
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming.kafka010._
+import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
+import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
 import org.apache.spark.streaming.{Seconds, State, StateSpec, StreamingContext}
 import utils.SparkUtils.{getSparkSession, isIDE}
 
@@ -10,31 +15,60 @@ object KafkaStreamingJob {
   def main(args:Array[String]) = {
     val spark=getSparkSession("lambda-streaming")
     val ssc=new StreamingContext(spark.sparkContext,Seconds(4))
+    spark.sparkContext.setLogLevel("ERROR")
     val wlc = Settings.WebLogGen
     val webLogTopic = wlc.weblogTopic
 
 
-    val sourceFilePath = if (isIDE()) {
+/*    val sourceFilePath = if (isIDE()) {
       "file:///C:/Users/Mayank/Documents/study/Boxes/spark-kafka-cassandra-applying-lambda-architecture/vagrant/input"
     } else {
       "file:///vagrant/input"
     }
     println(s"Looking for files in $sourceFilePath")
 
-    //val dStream=ssc.textFileStream(sourceFilePath)
 
-    val dStream = KafkaUtils.createStream(ssc,"localhost:2181","lambda-consumer",Map(webLogTopic->1)).map(_._2)
 
-    val activityStream = dStream.transform(input=> {
-      input.flatMap{line=>
-        val record =line.split("\\t")
-        val MS_IN_HOUR= 1000 * 60 * 60
-        if(record.length == 7)
-          Some(Activity(record(0).toLong/MS_IN_HOUR * MS_IN_HOUR,record(1),record(2),record(3),record(4),record(5),record(6)))
-        else
-          None
-      }
+    //val dStream=ssc.textFileStream(sourceFilePath)*/
+    val topics = Array(webLogTopic)
+
+    val kafkaParams = Map[String, Object](
+      "bootstrap.servers" -> "localhost:9092",
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> "weblogConsumers",
+      "auto.offset.reset" -> "latest",
+      "enable.auto.commit" -> (false: java.lang.Boolean)
+    )
+
+    /*KafkaUtils.createDirectStream[String, String](
+      streamingContext,
+      PreferConsistent,
+      Subscribe[String, String](topics, kafkaParams)
+    )*/
+
+    val dStream = KafkaUtils.createDirectStream(ssc,PreferConsistent,Subscribe[String,String](topics,kafkaParams))
+
+
+    //KafkaUtils.createRDD(ssc.sparkContext,kafkaParams,Array(),PreferConsistent)
+    val activityStream = dStream.transform(input=>{
+        rddToRDDActivity(input)
     })
+    import spark.implicits._
+
+     activityStream.foreachRDD { rdd =>
+       val activityDF=rdd
+      .toDF()
+        .selectExpr("timestamp_hour","referrer","action","prevPage","page",
+        "visitor","product","inputProps.topic as topic","inputProps.KafkaPartition as KafkaPartition","inputProps.fromOffset as fromOffset",
+        "inputProps.toOffset as toOffset")
+
+       activityDF.show()
+
+   /* activityDF.write.partitionBy("topic","KafkaPartition","timestamp_hour")
+         .mode(SaveMode.Append)
+         .parquet("hdfs://lambda-pluralsight:9000/lambda/weblogs-api")*/
+    }
     val newActivityStream = activityStream.transform(rdd=> {
       val df = spark.createDataFrame(rdd)
       df.createOrReplaceTempView("activityByStream")
